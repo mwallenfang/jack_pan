@@ -59,8 +59,7 @@ fn main() {
             let in_p_r = in_port_r.as_slice(ps);
 
             // TODO: Exponential smoothing
-            // TODO: Optimize useless calculations
-            // Calculate new volume settings
+            // Calculate new volume settings if the parameter value has changed
             pan_destination = PAN_ATOMIC.load(Ordering::Relaxed);
             if pan_destination != last_value {
                 pan_step_counter = step_amount;
