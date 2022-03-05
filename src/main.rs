@@ -79,7 +79,7 @@ fn main() {
                     1 => constant_power_pan(pan_current),
                     2 => db4_5_pan(pan_current),
                     _ => constant_power_pan(pan_current)
-                }
+                };
 
                 *output_l = pan_gain.0 * input_l;
                 *output_r = pan_gain.1 * input_r;
