@@ -1,9 +1,15 @@
-
-use itertools::izip;
-use ringbuf::RingBuffer;
 use std::f32::consts::PI;
-use std::io;
-use std::str::FromStr;
+use itertools::izip;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::Ordering::Relaxed;
+use atomic_float::AtomicF32;
+
+static PAN_ATOMIC: AtomicF32 = AtomicF32::new(0.5);
+static ALGO_SELECTION: AtomicU8 = AtomicU8::new(0);
+
+const DYNAMIC_RANGE: f32 = -80.0;
+
+mod ui;
 
 fn main() {
     // 1. open a client
@@ -27,15 +33,20 @@ fn main() {
         .register_port("pan_in_r", jack::AudioIn::default())
         .unwrap();
 
-    // 3. define process callback handler
-    let rb = RingBuffer::<f32>::new(client.sample_rate());
-    let (mut prod, mut cons) = rb.split();
+
+
+    // Define the amount of steps to be the amount of samples in 50ms
+    let step_amount: i32 = (client.sample_rate() as f32 * 0.05) as i32;
 
     // The pan variable, currently
     // 0 - left
     // 0.5 - middle
     // 1 - right
-    let mut pan = 0.5;
+    let mut pan_current: f32 = 0.5;
+    let mut pan_destination: f32 = 0.5;
+    let mut pan_step_counter = step_amount;
+    let mut pan_step_size = (pan_destination - pan_current) / step_amount as f32;
+    let mut last_value = 0.5;
 
     // Define the amount of steps to be the amount of samples in 50ms
     let process = jack::ClosureProcessHandler::new(
@@ -47,14 +58,30 @@ fn main() {
             let in_p_l = in_port_l.as_slice(ps);
             let in_p_r = in_port_r.as_slice(ps);
 
-            if let Some(f) = cons.pop() {
-                pan = f;
+            // TODO: Exponential smoothing
+            // TODO: Optimize useless calculations
+            // Calculate new volume settings
+            pan_destination = PAN_ATOMIC.load(Ordering::Relaxed);
+            if pan_destination != last_value {
+                pan_step_counter = step_amount;
+                pan_step_size = (pan_destination - pan_current) / step_amount as f32;
+                last_value = pan_destination;
             }
 
             // Write output
             for (input_l, input_r, output_l, output_r) in izip!(in_p_l, in_p_r, out_p_l, out_p_r) {
+                if pan_step_counter > 0 {
+                    pan_step_counter -= 1;
+                    pan_current += pan_step_size;
+                }
                 // Calculate the side gains for the given pan law and apply it
-                let pan_gain = db4_5_pan(pan);
+                let pan_gain = match ALGO_SELECTION.load(Relaxed) {
+                    0 => linear_pan(pan_current),
+                    1 => constant_power_pan(pan_current),
+                    2 => db4_5_pan(pan_current),
+                    _ => constant_power_pan(pan_current)
+                }
+
                 *output_l = pan_gain.0 * input_l;
                 *output_r = pan_gain.1 * input_r;
             }
@@ -67,29 +94,8 @@ fn main() {
     // 4. Activate the client. Also connect the ports to the system audio.
     let _active_client = client.activate_async((), process).unwrap();
 
-    // processing starts here
-
-    // 5. wait or do some processing while your handler is running in real time.
-    loop {
-        if let Some(f) = read_freq() {
-            prod.push(f).unwrap();
-        }
-    }
-    // 6. Optional deactivate. Not required since active_client will deactivate on
-    // drop, though explicit deactivate may help you identify errors in
-    // deactivate.
-    //_active_client.deactivate().unwrap();
-}
-
-/// Attempt to read a frequency from standard in. Will block until there is
-/// user input. `None` is returned if there was an error reading from standard
-/// in, or the retrieved string wasn't a compatible u16 integer.
-fn read_freq() -> Option<f32> {
-    let mut user_input = String::new();
-    match io::stdin().read_line(&mut user_input) {
-        Ok(_) => f32::from_str(user_input.trim()).ok(),
-        Err(_) => None,
-    }
+    // Run the GUI
+    ui::ui();
 }
 
 #[inline]
@@ -106,7 +112,7 @@ fn db2lin(input: f32) -> f32 {
 /// This is a linear calculation, which is normally not used, since it doesn't sound that good,
 /// since it has a "hole" in the middle
 fn linear_pan(factor: f32) -> (f32, f32) {
-    (factor, (1.0 - factor))
+    (1.0 - factor, factor)
 }
 
 /// Calculates the linear gain of the left and right channel given the input pan_factor

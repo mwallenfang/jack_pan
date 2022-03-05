@@ -1,0 +1,11 @@
+knob {
+    width: 100px;
+    height: 100px;
+    background-color: #292628;
+    border-radius: 50px;
+    border-width: 2px;
+}
+
+knob .track {
+    background-color: #f54e47;
+}
